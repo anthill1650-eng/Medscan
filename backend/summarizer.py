@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, Any
 
 from appconfig import PROMPT_PATH, ALLOW_DIAGNOSIS, ALLOW_TREATMENT_ADVICE, SUMMARY_READING_LEVEL
+from terms import find_terms, explain_terms
 
 
 def load_prompt(prompt_path: Path) -> str:
@@ -18,8 +19,7 @@ def summarize_text(text: str) -> Dict[str, Any]:
     - Loads your prompt rules (confirms path works)
     - Returns structured output
     - DOES NOT call external AI yet (no API keys needed)
-
-    Later: replace mock_summary with an LLM call.
+    - Finds and explains common medical abbreviations
     """
     prompt = load_prompt(PROMPT_PATH)
 
@@ -29,6 +29,8 @@ def summarize_text(text: str) -> Dict[str, Any]:
             "ok": False,
             "error": "No text provided.",
             "summary": "",
+            "terms_found": [],
+            "terms_explained": {},
             "meta": {
                 "reading_level": SUMMARY_READING_LEVEL,
                 "allow_diagnosis": ALLOW_DIAGNOSIS,
@@ -36,6 +38,10 @@ def summarize_text(text: str) -> Dict[str, Any]:
                 "prompt_loaded": True,
             },
         }
+
+    # NEW: find + explain abbreviations/terms
+    terms_found = find_terms(cleaned)
+    terms_explained = explain_terms(terms_found)
 
     # Minimal placeholder summary so the endpoint works today:
     first_lines = [line.strip() for line in cleaned.splitlines() if line.strip()][:8]
@@ -46,6 +52,8 @@ def summarize_text(text: str) -> Dict[str, Any]:
     return {
         "ok": True,
         "summary": mock_summary,
+        "terms_found": terms_found,
+        "terms_explained": terms_explained,
         "next_steps": [
             "Review your original document for accuracy.",
             "Write down any questions you want to ask your clinician.",
