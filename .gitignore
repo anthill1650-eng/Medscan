@@ -11,3 +11,32 @@ node_modules/
 Thumbs.db
 .vscode/
 .env
+
+# Ignore virtual environments anywhere in the repo
+.venv/
+**/.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Node / Expo
+node_modules/
+.expo/
+
+# Environment files
+.env
+.env.*
+
+# Databases & uploads
+*.db
+tmp_uploads/
+backend/build/
+backend/dist/
+backend/mediscan.db
+lab_test_1.png
+backend/fake_lab.png
+
+# OS
+.DS_Store
+Thumbs.db

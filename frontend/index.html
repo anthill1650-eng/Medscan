@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MediScan (Local)</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 0; background:#f6f7fb; }
+    header { padding: 16px 18px; background:#1e88e5; color:#fff; font-weight:700; }
+    .wrap { display:grid; grid-template-columns: 320px 1fr; gap: 14px; padding: 14px; max-width: 1200px; margin: 0 auto; }
+    .card { background:#fff; border: 1px solid #e6e6e6; border-radius: 12px; padding: 14px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    button { padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc; cursor: pointer; background:#fff; }
+    button.primary { background:#1e88e5; color:#fff; border-color:#1e88e5; }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    input[type="file"] { padding: 6px; }
+    .muted { color:#666; }
+    .error { color:#b00020; white-space: pre-wrap; }
+    textarea { width: 100%; height: 160px; box-sizing:border-box; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    pre { background:#f4f4f4; padding: 12px; border-radius: 10px; overflow:auto; font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border-bottom: 1px solid #eee; padding: 10px; text-align:left; vertical-align: top; }
+    th { background:#fafafa; }
+    .pill { display:inline-block; padding: 2px 8px; border-radius: 999px; border:1px solid #ddd; font-size: 12px; }
+    .ok { background:#f4fff6; }
+    .warn { background:#fffaf0; }
+    .bad { background:#fff3f3; }
+    .hist-item { border:1px solid #eee; border-radius: 10px; padding:10px; margin-top:10px; cursor:pointer; }
+    .hist-item:hover { background:#fafafa; }
+    .hist-top { display:flex; justify-content:space-between; gap:10px; }
+    .small { font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>🧪 MediScan — Lab Report Scanner (Local)</header>
+
+  <div class="wrap">
+    <!-- LEFT: history -->
+    <div class="card">
+      <h3 style="margin-top:0;">Previous Scans</h3>
+      <div class="row">
+        <button id="btnRefresh">Refresh</button>
+        <span id="histStatus" class="muted small"></span>
+      </div>
+      <div id="hist" class="muted small">No history yet.</div>
+    </div>
+
+    <!-- RIGHT: upload + results -->
+    <div>
+      <div class="card">
+        <h3 style="margin-top:0;">Upload Image</h3>
+        <div class="row">
+          <input id="file" type="file" accept="image/*" />
+          <button id="btnScan" class="primary">Scan Image</button>
+          <button id="btnCopy" disabled>Copy JSON</button>
+          <span id="status" class="muted"></span>
+        </div>
+        <div id="err" class="error"></div>
+      </div>
+
+      <div class="card" style="margin-top:14px;">
+        <h3 style="margin-top:0;">Overall Summary</h3>
+        <div id="summary" class="muted">No results yet.</div>
+        <div id="meta" class="muted small" style="margin-top:6px;"></div>
+      </div>
+
+      <div class="card" style="margin-top:14px;">
+        <h3 style="margin-top:0;">OCR Text Preview</h3>
+        <textarea id="ocr" readonly placeholder="OCR preview will show here..."></textarea>
+      </div>
+
+      <div class="card" style="margin-top:14px;">
+        <h3 style="margin-top:0;">Results</h3>
+        <div class="muted small">Parsed labs and next steps.</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Lab</th>
+              <th>Panel</th>
+              <th>Status</th>
+              <th>Severity</th>
+              <th>Sentence</th>
+              <th>Next steps</th>
+            </tr>
+          </thead>
+          <tbody id="tbody">
+            <tr><td colspan="6" class="muted">No results yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card" style="margin-top:14px;">
+        <h3 style="margin-top:0;">Raw JSON</h3>
+        <pre id="raw">{}</pre>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const API_BASE = "http://127.0.0.1:8001";
+
+  const elFile = document.getElementById("file");
+  const elBtnScan = document.getElementById("btnScan");
+  const elBtnCopy = document.getElementById("btnCopy");
+  const elBtnRefresh = document.getElementById("btnRefresh");
+
+  const elStatus = document.getElementById("status");
+  const elErr = document.getElementById("err");
+  const elSummary = document.getElementById("summary");
+  const elMeta = document.getElementById("meta");
+  const elOcr = document.getElementById("ocr");
+  const elTbody = document.getElementById("tbody");
+  const elRaw = document.getElementById("raw");
+
+  const elHist = document.getElementById("hist");
+  const elHistStatus = document.getElementById("histStatus");
+
+  let lastJson = null;
+
+  function pill(text, cls) {
+    return `<span class="pill ${cls}">${text}</span>`;
+  }
+  function statusPill(status) {
+    if (status === "in_range") return pill("in_range", "ok");
+    if (status === "high") return pill("high", "bad");
+    if (status === "low") return pill("low", "bad");
+    return pill(status || "unknown", "warn");
+  }
+  function severityPill(sev) {
+    if (!sev || sev === "none") return pill(sev || "none", "ok");
+    if (sev === "mild") return pill("mild", "warn");
+    if (sev === "moderate" || sev === "severe") return pill(sev, "bad");
+    return pill(sev, "warn");
+  }
+  function escapeHtml(s) {
+    return String(s || "")
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+  }
+  function setBusy(isBusy, msg="") {
+    elBtnScan.disabled = isBusy;
+    elStatus.textContent = msg;
+  }
+  function setError(msg="") {
+    elErr.textContent = msg;
+  }
+
+  function renderResults(json) {
+    lastJson = json;
+    elBtnCopy.disabled = !json;
+    elRaw.textContent = JSON.stringify(json || {}, null, 2);
+
+    elSummary.textContent = json?.overall_summary || "No results.";
+    elOcr.value = json?.ocr_text_preview || "";
+
+    const metaParts = [];
+    if (json?.scan_id) metaParts.push(`Scan ID: ${json.scan_id}`);
+    if (json?.id) metaParts.push(`Scan ID: ${json.id}`);
+    if (json?.filename) metaParts.push(`File: ${json.filename}`);
+    if (json?.created_at) metaParts.push(`Saved: ${json.created_at}`);
+    elMeta.textContent = metaParts.join(" • ");
+
+    const items = json?.items || [];
+    if (!items.length) {
+      elTbody.innerHTML = `<tr><td colspan="6" class="muted">No results detected.</td></tr>`;
+      return;
+    }
+
+    elTbody.innerHTML = items.map(it => {
+      const steps = (it.next_steps || []).map(s => `<div>• ${escapeHtml(s)}</div>`).join("");
+      return `
+        <tr>
+          <td>${escapeHtml(it.name || "")}</td>
+          <td>${escapeHtml(it.panel || "")}</td>
+          <td>${statusPill(it.status)}</td>
+          <td>${severityPill(it.severity)}</td>
+          <td>${escapeHtml(it.sentence || "")}</td>
+          <td>${steps}</td>
+        </tr>
+      `;
+    }).join("");
+  }
+
+  async function refreshHistory() {
+    elHistStatus.textContent = "Loading...";
+    try {
+      const res = await fetch(`${API_BASE}/scans?limit=50`);
+      const data = await res.json();
+      const rows = data.results || [];
+
+      if (!rows.length) {
+        elHist.innerHTML = "No history yet. Scan an image to create the first record.";
+        elHistStatus.textContent = "";
+        return;
+      }
+
+      elHist.innerHTML = rows.map(r => {
+        const file = r.filename || "(no filename)";
+        const summary = r.overall_summary || "";
+        const created = r.created_at || "";
+        return `
+          <div class="hist-item" data-id="${r.id}">
+            <div class="hist-top">
+              <div><strong>#${r.id}</strong> — ${escapeHtml(file)}</div>
+              <div class="muted small">${escapeHtml(created)}</div>
+            </div>
+            <div class="muted small">${escapeHtml(summary)}</div>
+          </div>
+        `;
+      }).join("");
+
+      // click handlers
+      document.querySelectorAll(".hist-item").forEach(el => {
+        el.addEventListener("click", async () => {
+          const id = el.getAttribute("data-id");
+          await loadScan(id);
+        });
+      });
+
+      elHistStatus.textContent = "";
+    } catch (e) {
+      elHistStatus.textContent = "Failed to load history.";
+      elHist.innerHTML = `<div class="error">${escapeHtml(String(e))}</div>`;
+    }
+  }
+
+  async function loadScan(id) {
+    setError("");
+    elStatus.textContent = `Loading scan #${id}...`;
+    try {
+      const res = await fetch(`${API_BASE}/scans/${id}`);
+      const data = await res.json();
+      renderResults(data);
+      elStatus.textContent = `Loaded scan #${id}.`;
+      setTimeout(() => elStatus.textContent = "", 1500);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  elBtnCopy.addEventListener("click", async () => {
+    if (!lastJson) return;
+    await navigator.clipboard.writeText(JSON.stringify(lastJson, null, 2));
+    elStatus.textContent = "Copied JSON to clipboard.";
+    setTimeout(() => elStatus.textContent = "", 1500);
+  });
+
+  elBtnRefresh.addEventListener("click", refreshHistory);
+
+  elBtnScan.addEventListener("click", async () => {
+    setError("");
+    elStatus.textContent = "";
+
+    const file = elFile.files && elFile.files[0];
+    if (!file) {
+      setError("Choose an image file first.");
+      return;
+    }
+
+    setBusy(true, "Uploading & scanning...");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+
+      const res = await fetch(`${API_BASE}/scan-image`, { method: "POST", body: form });
+      const json = await res.json();
+
+      if (!res.ok) {
+        setError(JSON.stringify(json, null, 2));
+        renderResults(json);
+      } else {
+        renderResults(json);
+        elStatus.textContent = `Done. Found ${json.count ?? 0} result(s). Saved as Scan ID ${json.scan_id}.`;
+        await refreshHistory();
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  // On load: quick health + history
+  (async function() {
+    try {
+      const res = await fetch(`${API_BASE}/`);
+      if (!res.ok) throw new Error("API not reachable.");
+      await refreshHistory();
+    } catch {
+      elStatus.textContent = "API not connected. Start uvicorn on port 8001.";
+    }
+  })();
+</script>
+</body>
+</html>
