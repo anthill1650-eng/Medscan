@@ -4,11 +4,12 @@ import { CameraView, CameraType, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import axios from "axios";
 
-const API = process.env.EXPO_PUBLIC_API_URL || "https://medscan-lrd7.onrender.com";
+// IMPORTANT: must be https in .env
+const API = process.env.EXPO_PUBLIC_API_URL ?? "https://medscan-lrd7.onrender.com";
 
-
-type UploadResponse = {
+type UploadStartResponse = {
   docId: string;
+  status: "queued" | "processing" | "done" | "error";
   pages: Array<{
     id: string;
     uri: string;
@@ -19,6 +20,15 @@ type UploadResponse = {
   }>;
 };
 
+type JobStatusResponse = {
+  docId: string;
+  status: "queued" | "processing" | "done" | "error";
+  result?: UploadStartResponse | null;
+  error?: string | null;
+};
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export default function App() {
   const cameraRef = useRef<CameraView | null>(null);
 
@@ -27,7 +37,8 @@ export default function App() {
   const [lastUri, setLastUri] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const [result, setResult] = useState<UploadResponse | null>(null);
+  // We display result as "UploadStartResponse" shape (docId/pages)
+  const [result, setResult] = useState<UploadStartResponse | null>(null);
 
   const toggleFacing = () => setFacing((f) => (f === "back" ? "front" : "back"));
 
@@ -81,14 +92,47 @@ export default function App() {
       const form = new FormData();
       form.append("files", { uri: lastUri, name: filename, type: filetype } as any);
 
-      const { data } = await axios.post<UploadResponse>(`${API}/upload`, form, {
-      headers: { "Content-Type": "multipart/form-data" },
-     timeout: 180000,
-  });
+      // 1) Start upload (can take time for big images)
+      const start = await axios.post<UploadStartResponse>(`${API}/upload`, form, {
+        headers: { "Content-Type": "multipart/form-data" },
+        timeout: 180000,
+      });
 
+      const docId = start.data.docId;
 
-      setResult(data);
-      Alert.alert("Upload Success ✅", `docId: ${data.docId}\nPages: ${data.pages.length}`);
+      // Show immediate placeholder result (pages exist even before OCR finishes)
+      setResult(start.data);
+
+      Alert.alert("Uploaded ✅", `docId: ${docId}\nNow processing...`);
+
+      // 2) Poll status (never crashes if result/pages missing)
+      const maxAttempts = 60; // 2 minutes max
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await sleep(2000);
+
+        const statusRes = await axios.get<JobStatusResponse>(`${API}/status/${docId}`, {
+          timeout: 30000,
+        });
+
+        const job = statusRes.data;
+
+        if (job.status === "done") {
+          const safeResult = job.result ?? start.data ?? { docId, status: "done", pages: [] };
+          const pagesCount = safeResult.pages?.length ?? 0;
+
+          setResult(safeResult);
+
+          Alert.alert("Done ✅", pagesCount > 0 ? `Pages: ${pagesCount}` : "Done, but pages were empty.");
+          return;
+        }
+
+        if (job.status === "error") {
+          Alert.alert("Processing error ❌", job.error ?? "Unknown error");
+          return;
+        }
+      }
+
+      Alert.alert("Still working…", "Processing is taking longer than expected. Try again in a minute.");
     } catch (e: any) {
       Alert.alert("Upload error", e?.message ?? String(e));
     } finally {
@@ -126,7 +170,7 @@ export default function App() {
           Backend: {API}
         </Text>
 
-        <Text style={styles.h2}>Last upload result</Text>
+        <Text style={styles.h2}>Last result</Text>
         {!result ? (
           <Text style={styles.muted}>No result yet. Upload an image to see docId/pages.</Text>
         ) : (
@@ -134,13 +178,17 @@ export default function App() {
             <Text style={styles.bold}>docId:</Text>
             <Text selectable>{result.docId}</Text>
 
+            <Text style={[styles.bold, { marginTop: 10 }]}>status:</Text>
+            <Text>{result.status}</Text>
+
             <Text style={[styles.bold, { marginTop: 10 }]}>pages:</Text>
-            {result.pages.map((p) => (
+            {(result.pages ?? []).map((p) => (
               <View key={p.id} style={styles.pageRow}>
                 <Text style={styles.muted}>{p.id}</Text>
                 <Text selectable style={styles.uri}>
                   {p.uri}
                 </Text>
+                {!!p.text && <Text style={styles.textSmall}>Text: {p.text}</Text>}
               </View>
             ))}
           </View>
@@ -156,6 +204,7 @@ const styles = StyleSheet.create({
   controls: { padding: 12, gap: 10 },
   panel: { flex: 1, paddingHorizontal: 12 },
   text: { padding: 12, fontSize: 16 },
+  textSmall: { fontSize: 12, marginTop: 4, opacity: 0.9 },
   footer: { paddingVertical: 10, fontSize: 12, opacity: 0.8 },
   h2: { fontSize: 16, fontWeight: "600", marginTop: 6, marginBottom: 6 },
   muted: { opacity: 0.7 },
@@ -164,9 +213,3 @@ const styles = StyleSheet.create({
   pageRow: { marginTop: 8 },
   uri: { fontSize: 12 },
 });
-
-
-    
-  
-
-    
