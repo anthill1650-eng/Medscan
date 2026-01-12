@@ -1,4 +1,6 @@
-﻿from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
+﻿# deploy-bump: force Render redeploy
+
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import List, Any, Dict, Optional
 import shutil
