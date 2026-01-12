@@ -1,10 +1,11 @@
-﻿import React, { useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 import { Alert, Button, StyleSheet, Text, View, ScrollView } from "react-native";
 import { CameraView, CameraType, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import axios from "axios";
 
-const API = process.env.EXPO_PUBLIC_API_URL ?? "http://192.168.12.116:8000";
+const API = process.env.EXPO_PUBLIC_API_URL || "https://medscan-lrd7.onrender.com";
+
 
 type UploadResponse = {
   docId: string;
@@ -81,9 +82,10 @@ export default function App() {
       form.append("files", { uri: lastUri, name: filename, type: filetype } as any);
 
       const { data } = await axios.post<UploadResponse>(`${API}/upload`, form, {
-        headers: { "Content-Type": "multipart/form-data" },
-        timeout: 60000,
-      });
+      headers: { "Content-Type": "multipart/form-data" },
+     timeout: 180000,
+  });
+
 
       setResult(data);
       Alert.alert("Upload Success ✅", `docId: ${data.docId}\nPages: ${data.pages.length}`);
