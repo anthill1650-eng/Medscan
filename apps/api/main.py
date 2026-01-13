@@ -1,18 +1,18 @@
 ﻿from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import List, Any, Dict, Optional
-import shutil
-import uuid
-import os
-import time
+import os, uuid, shutil, time
 
-# In-memory job store (fine for MVP). On Render Free it can reset if the instance restarts.
+# -----------------------
+# In-memory job store
+# -----------------------
 JOBS: Dict[str, Dict[str, Any]] = {}
 
 app = FastAPI(title="MedScan")
 
-
-# ---------- Models ----------
+# -----------------------
+# Models
+# -----------------------
 class DocPage(BaseModel):
     id: str
     uri: str
@@ -21,135 +21,100 @@ class DocPage(BaseModel):
     page: int = 0
     text: str = ""
 
-
 class UploadRes(BaseModel):
     docId: str
     status: str
     pages: List[DocPage]
 
-
 class JobStatusRes(BaseModel):
     docId: str
-    status: str  # queued | processing | done | error
+    status: str
     result: Optional[UploadRes] = None
     error: Optional[str] = None
 
+# -----------------------
+# Helpers
+# -----------------------
+def save_uploads(doc_id: str, files: List[UploadFile]) -> List[DocPage]:
+    pages: List[DocPage] = []
 
-# ---------- Helpers ----------
-def ensure_tmp_root() -> str:
-    # Always store in project working directory so it works on Windows + Render
+    # Use a local folder that exists on Render too
     base_tmp = os.path.join(os.getcwd(), "tmp_uploads")
     os.makedirs(base_tmp, exist_ok=True)
-    return base_tmp
 
+    for idx, file in enumerate(files):
+        filename = file.filename or f"page_{idx}.jpg"
+        ext = filename.split(".")[-1].lower() if "." in filename else "jpg"
+        key = f"{doc_id}/page_{idx}.{ext}"
 
-def save_upload_to_disk(doc_id: str, idx: int, file: UploadFile) -> str:
-    filename = file.filename or f"page_{idx}.jpg"
-    ext = filename.split(".")[-1] if "." in filename else "jpg"
-    key = f"{doc_id}/page_{idx}.{ext}"
+        path = os.path.join(base_tmp, key)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
 
-    base_tmp = ensure_tmp_root()
-    path = os.path.join(base_tmp, key)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
 
-    with open(path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        pages.append(
+            DocPage(
+                id=f"page_{idx}",
+                uri=key,
+                width=0,
+                height=0,
+                page=idx,
+                text=""
+            )
+        )
 
-    # We return a "uri key" (relative). You can later map it to a real URL if you add storage/CDN.
-    return key
+    return pages
 
-
-def run_processing_job(doc_id: str, saved_keys: List[str]) -> None:
+def process_job(doc_id: str):
     """
-    Background job: simulate OCR / processing.
-    Replace the placeholder section with your real OCR pipeline later.
+    Placeholder background work.
+    Replace this with real OCR later.
     """
     try:
-        if doc_id not in JOBS:
-            return
-
         JOBS[doc_id]["status"] = "processing"
-        JOBS[doc_id]["updated_at"] = time.time()
+        time.sleep(2)  # simulate work
 
-        # ---- Placeholder "processing" delay ----
-        time.sleep(2)
+        # Put "processed" text into each page
+        result: UploadRes = JOBS[doc_id]["result"]
+        for p in result.pages:
+            p.text = "processed (placeholder)"
 
-        # IMPORTANT: Always keep result/pages structure stable.
-        res = JOBS[doc_id].get("result") or {"docId": doc_id, "status": "done", "pages": []}
-        pages = res.get("pages") or []
-
-        # Fill texts (placeholder)
-        for i in range(min(len(pages), len(saved_keys))):
-            pages[i]["text"] = "processed (placeholder)"
-
-        res["pages"] = pages
-        res["status"] = "done"
-
-        JOBS[doc_id]["result"] = res
         JOBS[doc_id]["status"] = "done"
-        JOBS[doc_id]["updated_at"] = time.time()
+        JOBS[doc_id]["result"] = result
+        JOBS[doc_id]["error"] = None
 
     except Exception as e:
-        if doc_id in JOBS:
-            JOBS[doc_id]["status"] = "error"
-            JOBS[doc_id]["error"] = str(e)
-            JOBS[doc_id]["updated_at"] = time.time()
+        JOBS[doc_id]["status"] = "error"
+        JOBS[doc_id]["error"] = str(e)
 
-
-# ---------- Routes ----------
+# -----------------------
+# Routes
+# -----------------------
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-
 @app.post("/upload", response_model=UploadRes)
 async def upload(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):
-    if not files:
-        raise HTTPException(status_code=400, detail="No files provided")
-
     doc_id = str(uuid.uuid4())
-    saved_keys: List[str] = []
 
-    # Save files first
-    for idx, file in enumerate(files):
-        saved_keys.append(save_upload_to_disk(doc_id, idx, file))
+    # 1) Save files
+    pages = save_uploads(doc_id, files)
 
-    # Create stable placeholder result immediately (so client never sees missing pages)
-    placeholder_pages = [
-        {
-            "id": f"page_{i}",
-            "uri": saved_keys[i],
-            "width": 0,
-            "height": 0,
-            "page": i,
-            "text": "",
-        }
-        for i in range(len(saved_keys))
-    ]
-
+    # 2) IMPORTANT: Create the job RIGHT NOW so /status can find it
+    placeholder = UploadRes(docId=doc_id, status="queued", pages=pages)
     JOBS[doc_id] = {
-        "docId": doc_id,
         "status": "queued",
+        "result": placeholder,
         "error": None,
-        "created_at": time.time(),
-        "updated_at": time.time(),
-        "result": {
-            "docId": doc_id,
-            "status": "queued",
-            "pages": placeholder_pages,
-        },
     }
 
-    # Kick off background processing
-    background_tasks.add_task(run_processing_job, doc_id, saved_keys)
+    # 3) Start background processing using SAME doc_id
+    background_tasks.add_task(process_job, doc_id)
 
-    # Return fast: docId + queued
-    return UploadRes(
-        docId=doc_id,
-        status="queued",
-        pages=[DocPage(**p) for p in placeholder_pages],
-    )
-
+    # 4) Return immediately
+    return placeholder
 
 @app.get("/status/{doc_id}", response_model=JobStatusRes)
 def get_status(doc_id: str):
@@ -159,7 +124,7 @@ def get_status(doc_id: str):
 
     return JobStatusRes(
         docId=doc_id,
-        status=job.get("status", "queued"),
+        status=job["status"],
         result=job.get("result"),
         error=job.get("error"),
     )
